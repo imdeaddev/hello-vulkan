@@ -6,3 +6,4 @@ build/
 cmake-debug-build/
 out/
 *.spv
+bin/
