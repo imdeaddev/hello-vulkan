@@ -1,0 +1,5 @@
+ColumnLimit: 140
+IndentWidth: 4
+AccessModifierOffset: -4
+AlwaysBreakTemplateDeclarations: Yes
+SortIncludes: Never

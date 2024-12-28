@@ -1,0 +1,4 @@
+[submodule "deps/glfw"]
+	path = deps/glfw
+	url = https://github.com/glfw/glfw/
+	branch = tags/3.4
