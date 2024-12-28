@@ -682,6 +682,7 @@ class VulkanRenderer : public RendererBase {
 
     void recreate_swapchain() {
         vkDeviceWaitIdle(m_device);
+        update_surface_size_data();
         destroy_swapchain_resources();
         create_swapchain();
         create_swapchain_resources();
