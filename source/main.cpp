@@ -1,9 +1,11 @@
 #include <optional>
+#include <unordered_map>
 #include <vector>
-#include <vulkan/vulkan.h>
-#include <GLFW/glfw3.h>
+#include <array>
 #include <iostream>
 #include <string_view>
+#include <vulkan/vulkan.h>
+#include <GLFW/glfw3.h>
 
 constexpr std::string_view WINDOW_NAME = "Vulkan window";
 constexpr int DEFAULT_WIDTH = 640;
@@ -206,6 +208,17 @@ class VulkanRenderer : public RendererBase {
     VkPhysicalDeviceProperties m_physicalDeviceProperties{};
     QueueFamiliesProperties m_queueFamilies{};
 
+    VkSurfaceFormatKHR m_surfaceFormat{};
+    VkFormat m_backBufferFormat = VK_FORMAT_UNDEFINED;
+    VkFormat m_depthBufferFormat = VK_FORMAT_UNDEFINED;
+    VkPresentModeKHR m_presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    VkExtent2D m_surfaceExtent{};
+    VkSurfaceTransformFlagBitsKHR m_surfaceTransform{};
+
+    VkDevice m_device{};
+    VkQueue m_graphicsQueue{};
+    VkQueue m_presentQueue{};
+
     void create_instance_debug_utils_and_surface() {
         auto requiredExtensions = get_required_instance_extensions();
         bool debugUtilsSupported = check_debug_utils_extension_support();
@@ -280,11 +293,121 @@ class VulkanRenderer : public RendererBase {
         std::clog << "GPU: " << m_physicalDeviceProperties.deviceName << std::endl;
     }
 
+    VkFormat get_first_supported_format(const std::vector<VkFormat> &candidateFormats, VkImageTiling tiling,
+                                        VkFormatFeatureFlags features = 0) const {
+        for (auto format : candidateFormats) {
+            VkFormatProperties formatProperties{};
+            vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &formatProperties);
+            if (tiling == VK_IMAGE_TILING_LINEAR && (formatProperties.linearTilingFeatures & features) == features) {
+                return format;
+            }
+            if (tiling == VK_IMAGE_TILING_OPTIMAL && (formatProperties.optimalTilingFeatures & features) == features) {
+                return format;
+            }
+        }
+        return VK_FORMAT_UNDEFINED;
+    }
+
+    void get_surface_data() {
+        VkSurfaceCapabilitiesKHR surfaceCapabilities{};
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physicalDevice, m_surfaceKHR, &surfaceCapabilities);
+        m_surfaceExtent = surfaceCapabilities.currentExtent;
+        m_surfaceTransform = surfaceCapabilities.currentTransform;
+
+        uint32_t presentModesCount = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surfaceKHR, &presentModesCount, nullptr);
+        std::vector<VkPresentModeKHR> allPresentModes{presentModesCount};
+        vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surfaceKHR, &presentModesCount, allPresentModes.data());
+        m_presentMode = allPresentModes[0];
+        for (auto presentMode : allPresentModes) {
+            if (presentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
+                m_presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                break;
+            }
+        }
+
+        uint32_t formatsCount = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(m_physicalDevice, m_surfaceKHR, &formatsCount, nullptr);
+        std::vector<VkSurfaceFormatKHR> surfaceFormats{formatsCount};
+        vkGetPhysicalDeviceSurfaceFormatsKHR(m_physicalDevice, m_surfaceKHR, &formatsCount, surfaceFormats.data());
+        for (const auto &format : surfaceFormats) {
+            if (format.format == VK_FORMAT_R8G8B8A8_SRGB) {
+                m_surfaceFormat = format;
+                break;
+            }
+            if (format.format == VK_FORMAT_B8G8R8A8_SRGB) {
+                m_surfaceFormat = format;
+                break;
+            }
+            if (format.format == VK_FORMAT_R8G8B8A8_UNORM) {
+                m_surfaceFormat = format;
+                break;
+            }
+            if (format.format == VK_FORMAT_B8G8R8A8_UNORM) {
+                m_surfaceFormat = format;
+                break;
+            }
+        }
+        m_backBufferFormat = m_surfaceFormat.format;
+        if (m_backBufferFormat == VK_FORMAT_UNDEFINED) {
+            throw std::runtime_error("RGBA 32 bit formats for back buffer are not supported");
+        }
+
+        m_depthBufferFormat =
+            get_first_supported_format({VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT},
+                                       VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+        if (m_depthBufferFormat == VK_FORMAT_UNDEFINED) {
+            throw std::runtime_error("Depth buffer with stencil is not supported");
+        }
+    }
+
+    void update_surface_size_data() {
+        VkSurfaceCapabilitiesKHR surfaceCapabilities{};
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physicalDevice, m_surfaceKHR, &surfaceCapabilities);
+        m_surfaceExtent = surfaceCapabilities.currentExtent;
+        m_surfaceTransform = surfaceCapabilities.currentTransform;
+    }
+
+    void create_logical_device() {
+        std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> familiesToCountIndex{};
+        familiesToCountIndex[m_queueFamilies.graphicsQueueFamily.value()] = std::make_pair(0, 0);
+        familiesToCountIndex[m_queueFamilies.presentQueueFamily.value()] = std::make_pair(0, 0);
+        ++familiesToCountIndex[m_queueFamilies.graphicsQueueFamily.value()].first;
+        ++familiesToCountIndex[m_queueFamilies.presentQueueFamily.value()].first;
+
+        std::vector<VkDeviceQueueCreateInfo> deviceQueuesInfos{};
+        deviceQueuesInfos.reserve(familiesToCountIndex.size());
+        constexpr std::array<float, 2> queuePriorities{1.0f, 1.0f};
+
+        for (const auto [familyIndex, countIndex] : familiesToCountIndex) {
+            const auto [queueCount, queueIndex] = countIndex;
+            auto &queueInfo = deviceQueuesInfos.emplace_back();
+            queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueInfo.queueCount = queueCount;
+            queueInfo.pQueuePriorities = queuePriorities.data();
+            queueInfo.queueFamilyIndex = familyIndex;
+        }
+
+        VkDeviceCreateInfo deviceInfo{};
+        deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        deviceInfo.queueCreateInfoCount = deviceQueuesInfos.size();
+        deviceInfo.pQueueCreateInfos = deviceQueuesInfos.data();
+        deviceInfo.enabledExtensionCount = requiredDeviceExtensions.size();
+        deviceInfo.ppEnabledExtensionNames = requiredDeviceExtensions.data();
+        ThrowIfFailed(vkCreateDevice(m_physicalDevice, &deviceInfo, nullptr, &m_device));
+        vkGetDeviceQueue(m_device, m_queueFamilies.graphicsQueueFamily.value(),
+                         familiesToCountIndex[m_queueFamilies.graphicsQueueFamily.value()].second++, &m_graphicsQueue);
+        vkGetDeviceQueue(m_device, m_queueFamilies.presentQueueFamily.value(),
+                         familiesToCountIndex[m_queueFamilies.presentQueueFamily.value()].second++, &m_presentQueue);
+    }
+
 public:
     void init(int width, int height) final {
         base::init(width, height);
         create_instance_debug_utils_and_surface();
         choose_physical_device();
+        get_surface_data();
+        create_logical_device();
 
         std::clog << "Successfully created Vulkan renderer" << std::endl;
     }
@@ -298,6 +421,10 @@ public:
     }
 
     void destroy() final {
+        if (m_device) {
+            vkDestroyDevice(m_device, nullptr);
+        }
+
         if (m_surfaceKHR) {
             vkDestroySurfaceKHR(m_instance, m_surfaceKHR, nullptr);
         }
