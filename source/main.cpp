@@ -141,6 +141,63 @@ void destroy_debug_utils_messenger(VkInstance instance, VkDebugUtilsMessengerEXT
     }
 }
 
+struct Vector2 {
+    union {
+        struct {
+            float x = 0, y = 0;
+        };
+        std::array<float, 2> array;
+    };
+};
+
+struct Vector3 {
+    union {
+        struct {
+            float x = 0, y = 0, z = 0;
+        };
+        std::array<float, 3> array;
+    };
+};
+
+struct Vertex {
+    Vector3 position{};
+    Vector2 texCoord{};
+
+    static const VkVertexInputBindingDescription binding_desc() {
+        return VkVertexInputBindingDescription{.binding = 0, .stride = sizeof(Vertex), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
+    }
+
+    static const std::array<VkVertexInputAttributeDescription, 2> attribute_descs() {
+        std::array<VkVertexInputAttributeDescription, 2> descs{};
+        descs[0].binding = 0;
+        descs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        descs[0].location = 0;
+        descs[0].offset = offsetof(Vertex, position); // = 0;
+        descs[1].binding = 0;
+        descs[1].format = VK_FORMAT_R32G32_SFLOAT;
+        descs[1].location = 1;
+        descs[1].offset = offsetof(Vertex, texCoord); // = 3 * sizeof(float); OR = 12;
+        return descs;
+    }
+};
+
+struct ModelData {
+    std::vector<Vertex> vertices{};
+    std::vector<uint32_t> indices{};
+
+    constexpr static ModelData plane() {
+        ModelData result{};
+        result.vertices = {
+            {{1.0, -1.0, 0}, {1.0, 1.0}},  // Top-right
+            {{1.0, 1.0, 0}, {1.0, 0.0}},   // Bottom-right
+            {{-1.0, 1.0, 0}, {0.0, 0.0}},  // Bottom-left
+            {{-1.0, -1.0, 0}, {0.0, 1.0}}, // Top-left
+        };
+        result.indices = {0, 1, 2, 3, 0, 2};
+        return result;
+    }
+};
+
 #define ThrowIfFailed(expr)                                                                                                                \
     do {                                                                                                                                   \
         if ((expr) != VK_SUCCESS) {                                                                                                        \
@@ -249,6 +306,12 @@ class VulkanRenderer : public RendererBase {
     // For GPU queues synchronization
     std::vector<VkSemaphore> m_renderFinishedSemaphores{};
     std::vector<VkSemaphore> m_imageAvailableSemaphore{};
+
+    VkBuffer m_vertexBuffer = nullptr;
+    VkDeviceMemory m_vertexBufferMemory = nullptr;
+    VkBuffer m_indexBuffer = nullptr;
+    VkDeviceMemory m_indexBufferMemory = nullptr;
+    uint32_t m_indexCount = 0;
 
     void create_instance_debug_utils_and_surface() {
         auto requiredExtensions = get_required_instance_extensions();
@@ -438,6 +501,132 @@ class VulkanRenderer : public RendererBase {
                          familiesToCountIndex[m_queueFamilies.presentQueueFamily.value()].second++, &m_presentQueue);
     }
 
+    uint32_t find_memory_type_index(uint32_t mask, VkMemoryPropertyFlags flags) const {
+        VkPhysicalDeviceMemoryProperties deviceMemoryProperties;
+        vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &deviceMemoryProperties);
+
+        for (size_t i = 0; i < deviceMemoryProperties.memoryTypeCount; ++i) {
+            if ((mask & 1 << i) && (deviceMemoryProperties.memoryTypes[i].propertyFlags & flags) == flags) {
+                return i;
+            }
+        }
+        throw std::runtime_error("Failed to find suitable memory type index");
+    }
+
+    void allocate_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryFlags, VkBuffer &buffer,
+                         VkDeviceMemory &memory) const {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+
+        ThrowIfFailed(vkCreateBuffer(m_device, &bufferInfo, nullptr, &buffer));
+
+        VkMemoryRequirements memoryRequirements{};
+        vkGetBufferMemoryRequirements(m_device, buffer, &memoryRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memoryRequirements.size;
+        allocInfo.memoryTypeIndex = find_memory_type_index(memoryRequirements.memoryTypeBits, memoryFlags);
+
+        ThrowIfFailed(vkAllocateMemory(m_device, &allocInfo, nullptr, &memory));
+
+        ThrowIfFailed(vkBindBufferMemory(m_device, buffer, memory, 0));
+    }
+
+    void destroy_buffer(VkBuffer buffer, VkDeviceMemory memory) const {
+        if (buffer) {
+            vkDestroyBuffer(m_device, buffer, nullptr);
+        }
+        if (memory) {
+            vkFreeMemory(m_device, memory, nullptr);
+        }
+    }
+
+    VkCommandBuffer begin_one_time_submit_buffer() const {
+        VkCommandBuffer cmdBuffer{};
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = m_commandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+        ThrowIfFailed(vkAllocateCommandBuffers(m_device, &allocInfo, &cmdBuffer));
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        ThrowIfFailed(vkBeginCommandBuffer(cmdBuffer, &beginInfo));
+        return cmdBuffer;
+    }
+
+    void submit_one_time_submit_command_buffer(VkCommandBuffer cmdBuffer) const {
+        vkEndCommandBuffer(cmdBuffer);
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmdBuffer;
+
+        ThrowIfFailed(vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, nullptr));
+        vkQueueWaitIdle(m_graphicsQueue);
+
+        vkFreeCommandBuffers(m_device, m_commandPool, 1, &cmdBuffer);
+    }
+
+    void copy_buffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer dst, VkDeviceSize size, VkDeviceSize srcOffset = 0,
+                     VkDeviceSize dstOffset = 0) {
+        VkBufferCopy copyRegion{};
+        copyRegion.srcOffset = srcOffset;
+        copyRegion.dstOffset = dstOffset;
+        copyRegion.size = size;
+        vkCmdCopyBuffer(cmd, src, dst, 1, &copyRegion);
+    }
+
+    void create_vertex_buffer(const std::vector<Vertex> &vertices, VkBuffer &buffer, VkDeviceMemory &memory) {
+        VkBuffer stagingBuffer = nullptr;
+        VkDeviceMemory stagingBufferMemory = nullptr;
+        VkDeviceSize bufferSize = vertices.size() * sizeof(vertices[0]);
+        allocate_buffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        allocate_buffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buffer, memory);
+        void *pMapped = nullptr;
+        ThrowIfFailed(vkMapMemory(m_device, stagingBufferMemory, 0, bufferSize, 0, &pMapped));
+        memcpy(pMapped, vertices.data(), bufferSize);
+        vkUnmapMemory(m_device, stagingBufferMemory);
+        auto cmd = begin_one_time_submit_buffer();
+        copy_buffer(cmd, stagingBuffer, buffer, bufferSize);
+        submit_one_time_submit_command_buffer(cmd);
+        destroy_buffer(stagingBuffer, stagingBufferMemory);
+    }
+
+    void create_index_buffer(const std::vector<uint32_t> &indices, VkBuffer &buffer, VkDeviceMemory &memory) {
+        VkBuffer stagingBuffer = nullptr;
+        VkDeviceMemory stagingBufferMemory = nullptr;
+        VkDeviceSize bufferSize = indices.size() * sizeof(indices[0]);
+        allocate_buffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+        allocate_buffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buffer, memory);
+        void *pMapped = nullptr;
+        ThrowIfFailed(vkMapMemory(m_device, stagingBufferMemory, 0, bufferSize, 0, &pMapped));
+        memcpy(pMapped, indices.data(), bufferSize);
+        vkUnmapMemory(m_device, stagingBufferMemory);
+        auto cmd = begin_one_time_submit_buffer();
+        copy_buffer(cmd, stagingBuffer, buffer, bufferSize);
+        submit_one_time_submit_command_buffer(cmd);
+        destroy_buffer(stagingBuffer, stagingBufferMemory);
+    }
+
+    void load_model() {
+        ModelData plane = ModelData::plane();
+        create_vertex_buffer(plane.vertices, m_vertexBuffer, m_vertexBufferMemory);
+        create_index_buffer(plane.indices, m_indexBuffer, m_indexBufferMemory);
+        m_indexCount = plane.indices.size();
+    }
+
     void create_pipeline_layout() {
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -524,7 +713,12 @@ class VulkanRenderer : public RendererBase {
 
         VkPipelineVertexInputStateCreateInfo pipelineVertexInputStateInfo{};
         pipelineVertexInputStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        // TODO: vertex attributes descriptions
+        auto bindingDesc = Vertex::binding_desc();
+        auto attributeDesc = Vertex::attribute_descs();
+        pipelineVertexInputStateInfo.vertexBindingDescriptionCount = 1;
+        pipelineVertexInputStateInfo.pVertexBindingDescriptions = &bindingDesc;
+        pipelineVertexInputStateInfo.vertexAttributeDescriptionCount = attributeDesc.size();
+        pipelineVertexInputStateInfo.pVertexAttributeDescriptions = attributeDesc.data();
 
         VkPipelineInputAssemblyStateCreateInfo pipelineInputAssemblyStateInfo{};
         pipelineInputAssemblyStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -740,6 +934,7 @@ public:
         create_swapchain_resources();
         create_command_buffers();
         create_synchronization_objects();
+        load_model();
 
         std::clog << "Successfully created Vulkan renderer" << std::endl;
     }
@@ -797,7 +992,11 @@ public:
         VkRect2D scissor{};
         scissor = renderPassBeginInfo.renderArea;
         vkCmdSetScissor(cmd, 0, 1, &scissor);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+
+        vkCmdBindIndexBuffer(cmd, m_indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_vertexBuffer, offsets);
+        vkCmdDrawIndexed(cmd, m_indexCount, 1, 0, 0, 0);
         vkCmdEndRenderPass(cmd);
         ThrowIfFailed(vkEndCommandBuffer(cmd));
 
@@ -841,6 +1040,9 @@ public:
 
     void destroy() final {
         vkDeviceWaitIdle(m_device);
+
+        destroy_buffer(m_vertexBuffer, m_vertexBufferMemory);
+        destroy_buffer(m_indexBuffer, m_indexBufferMemory);
 
         for (uint32_t i = 0; i < maxFramesInFlight; ++i) {
             vkDestroyFence(m_device, m_inFlightFences[i], nullptr);
