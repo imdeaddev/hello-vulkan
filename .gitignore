@@ -3,7 +3,7 @@
 build/
 .idea/
 .vs/
-cmake-debug-build/
+cmake-build-*/
 out/
 *.spv
 bin/
