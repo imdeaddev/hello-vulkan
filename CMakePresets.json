@@ -1,0 +1,45 @@
+{
+    "version": 10,
+    "configurePresets": [
+        {
+            "name": "configure-base",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "installDir": "${sourceDir}/install",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "hidden": true
+        },
+        {
+            "name": "configure-debug",
+            "inherits": "configure-base",
+            "hidden": false,
+            "displayName": "Debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true
+            }
+        },
+        {
+            "name": "configure-release",
+            "inherits": "configure-base",
+            "hidden": false,
+            "displayName": "Release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "build-debug",
+            "displayName": "Debug",
+            "configurePreset": "configure-debug"
+        },
+        {
+            "name": "build-release",
+            "displayName": "Release",
+            "configurePreset": "configure-release"
+        }
+    ]
+}

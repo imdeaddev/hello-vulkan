@@ -5,7 +5,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 
 find_package(Vulkan QUIET REQUIRED)
-add_subdirectory(deps/glfw)
+find_package(Stb REQUIRED)
+find_package(glfw3 CONFIG REQUIRED)
+find_package(glm CONFIG REQUIRED)
+find_package(Stb REQUIRED)
 
 add_executable(vkstart source/main.cpp)
-target_link_libraries(vkstart PRIVATE Vulkan::Vulkan glfw)
+target_link_libraries(vkstart PRIVATE Vulkan::Vulkan glfw glm::glm)
+target_include_directories(vkstart PRIVATE ${Stb_INCLUDE_DIR})

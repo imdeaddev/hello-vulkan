@@ -1,9 +1,10 @@
+.vs/
+out/
+.idea/
+cmake-build-*/
 .cache/
 .vscode/
 build/
-.idea/
-.vs/
-cmake-build-*/
-out/
+install/
 *.spv
 bin/
