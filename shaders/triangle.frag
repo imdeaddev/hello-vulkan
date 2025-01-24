@@ -6,8 +6,10 @@ layout(push_constant) uniform PushConstants {
     layout(offset=64) vec4 uColor;
 };
 
+layout(set = 1, binding = 0) uniform sampler2D uTexture;
+
 layout(location = 0) out vec4 oColor;
 
 void main() {
-    oColor = vec4(uColor.xyz, 1.0);
+    oColor = texture(uTexture, iTexCoord);
 }

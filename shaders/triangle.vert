@@ -3,7 +3,7 @@
 layout(location = 0) in vec3 iPosition;
 layout(location = 1) in vec2 iTexCoord;
 
-layout(binding = 0) uniform Scene {
+layout(set = 0, binding = 0) uniform Scene {
     mat4 uView;
     mat4 uProj;
 };

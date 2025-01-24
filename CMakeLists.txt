@@ -13,3 +13,5 @@ find_package(Stb REQUIRED)
 add_executable(vkstart source/main.cpp)
 target_link_libraries(vkstart PRIVATE Vulkan::Vulkan glfw glm::glm)
 target_include_directories(vkstart PRIVATE ${Stb_INCLUDE_DIR})
+
+file(COPY grid.png DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
